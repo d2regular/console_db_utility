@@ -3,11 +3,10 @@ It's simple console program what interacts with database
 """
 
 import os
-from collections import namedtuple
+import sys
 import json
+from collections import namedtuple
 import psycopg2
-
-CompanyUnit = namedtuple('CompanyUnit', 'id parent_id name')
 
 
 def connect(database, user, password, host="localhost", port=5432):
@@ -41,7 +40,7 @@ def connect(database, user, password, host="localhost", port=5432):
         return db
 
 
-def import_JSON(db, filepath, clear_table=True):
+def import_JSON(db, filename, clear_table=False):
     """
     This function import data from JSON file to 'company_units' table.
     If import operation is successful then it return True else False.
@@ -51,9 +50,9 @@ def import_JSON(db, filepath, clear_table=True):
     """
 
     data_json = None
-    filepath = os.path.abspath(filepath)
+    filename = os.path.abspath(filename)
     table_name = 'company_units'
-    with open(filepath) as f:
+    with open(filename) as f:
         try:
             data_json = json.load(f)
         except json.decoder.JSONDecodeError as err:
@@ -196,3 +195,62 @@ def get_integer(message, name="integer", exit_key='Q'):
             return num
         except ValueError:
             print("ERROR {0} must be an integer".format(name))
+
+
+# def get_sysargv():
+#     """
+#     Process arguments and options from command line.
+#     """
+#
+#     usage = "usage: %prog arg [options] "
+#     parser = OptionParser(usage=usage)
+#     # parser.add_option("-f", "--file", dest="filename", metavar="FILE",
+#     #                   help="import JSON-file")
+#     parser.add_option("-C", "--clear-table", dest="clear_table", default=False,
+#                       action="store_true",
+#                       help="delete all rows from 'company units' table before "
+#                            "import operation. [default: %default]")
+#
+#     (options, args) = parser.parse_args()
+#
+#     if len(args) != 1:
+#         parser.error("incorrect number of arguments")
+#
+#     return options, args
+
+def get_argv():
+    """
+    Process arguments and options from command line.
+    """
+
+    Option = namedtuple('Option', 'short_opt, long_opt, description')
+    options = {
+        'help': Option('-h', '--help', 'show this help message and exit'),
+        'clear_table': Option('-C', '--clear-table',
+                              'delete all rows from "company units" table '
+                              'before import operation. [default: False]')
+    }
+
+    usage = "Usage: {} arg [options] \n".format(sys.argv[0])
+
+    args = sys.argv[1:]
+
+    if len(args) < 1 or len(args) > 2:
+        print("incorrect number of arguments")
+        exit(1)
+
+    if len(args) == 1:
+        if args[0] in ['-h', '--help']:
+            print(usage)
+            for opt in options.values():
+                print('\t{0}, {1:<20} {2}'.format(
+                    opt.short_opt, opt.long_opt, opt.description))
+            exit(0)
+
+        return {'filename': args[0], 'clear_table': False}
+
+    if args[1] not in ['-C', '--clear-table']:
+        print("incorrect argument: ", args[1])
+        exit(1)
+
+    return {'filename': args[0], 'clear_table': True}
