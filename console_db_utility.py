@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+
+
 """
 It's simple console program what interacts with database
 """
@@ -7,6 +10,71 @@ import sys
 import json
 from collections import namedtuple
 import psycopg2
+from configparser import ConfigParser
+
+
+def main():
+    # get command line arguments
+    args = process_sysargv()
+    filename = args['filename']
+    clear_table = args['clear_table']
+    if not os.path.exists(filename):
+        print('File with name {} doesn\'t exist'.format(filename))
+        exit(1)
+
+    # get db connection parameters
+    try:
+        params = config('database.ini')
+    except Exception as err:
+        print(err)
+        exit(1)
+
+    # set db connection
+    try:
+        db = connect(**params)
+    except Exception as err:
+        print('Error database connection\n', err)
+        exit(1)
+
+    # import from JSON-file to table
+    if not import_JSON(db, filename, clear_table=clear_table):
+        exit(1)
+
+    with db.cursor() as cursor:
+        # interactive menu of program
+        menu = '(S)Select  (Q)uit'
+        valid = frozenset('SQ')
+        while True:
+            print('\n\nSelect employees who belong to the same root unit '
+                  'of company')
+            menu_choice = get_menu_choice(menu, valid)
+            if menu_choice == 'Q':
+                return
+
+            employee_id = get_integer('Input employee ID', 'employee ID')
+            if menu_choice is False:
+                return
+            # show result query
+            unit_employees(db, employee_id)
+
+
+def config(filename='database.ini', section='postgresql'):
+    """Read connection config. Return parameters of connection"""
+
+    parser = ConfigParser()
+    parser.read(filename)
+
+    db = {}
+    if parser.has_section(section):
+        params = parser.items(section)
+        for param in params:
+            db[param[0]] = param[1]
+    else:
+        raise Exception(
+            'Bad config file.\nSection {0} not found in the {1} file\n'.format(
+                section, filename))
+
+    return db
 
 
 def connect(database, user, password, host="localhost", port=5432):
@@ -16,28 +84,29 @@ def connect(database, user, password, host="localhost", port=5432):
     """
 
     with psycopg2.connect(host=host, port=port, database=database, user=user,
-                          password=password) as db, db.cursor() as cursor:
+                          password=password) as conn, conn.cursor() as cursor:
 
-        command = """
-            CREATE TABLE IF NOT EXISTS company_units (
-                id INTEGER PRIMARY KEY NOT NULL,
-                parentId INTEGER,
-                name TEXT NOT NULL
-            )
-            """
-        cursor.execute(command)
-
+        print('Connecting to the database...')
         try:
+            command = """
+                        CREATE TABLE IF NOT EXISTS company_units (
+                            id INTEGER PRIMARY KEY NOT NULL,
+                            parentId INTEGER,
+                            name TEXT NOT NULL
+                        )
+                        """
+            cursor.execute(command)
+
             command = """
                 ALTER TABLE company_units ADD CONSTRAINT fk_company_units
                     FOREIGN KEY (parentId) REFERENCES company_units(id)
                     """
             cursor.execute(command)
-        except psycopg2.ProgrammingError as err:
-            print(err)
+        except psycopg2.DatabaseError as err:
+            print(str(err).strip())
 
-        db.commit()
-        return db
+        conn.commit()
+        return conn
 
 
 def import_JSON(db, filename, clear_table=False):
@@ -59,12 +128,10 @@ def import_JSON(db, filename, clear_table=False):
             print('\nAttempt to import a bad JSON file with name {0}\n\t'
                   '{1}'.format(f.name, err))
             return False
-            # raise ValueError(err_msg)
         if not fit_schema(data_json):
             print('\nJSON structure doesn\'t fit the scheme of "{0}" table.'
                   '\n\tLoading file: {1}'.format(table_name, f.name))
             return False
-            # raise TypeError(err_message)
 
     command = 'INSERT INTO {} (id, ParentId, Name) VALUES ' \
               '(%s, %s, %s)'.format(table_name)
@@ -184,11 +251,10 @@ def get_integer(message, name="integer", exit_key='Q'):
     or False if was inputted Exit Key.
     """
 
-    exit_message = '\n(Press [{}] to stop operation) '.format(exit_key)
-    message = exit_message + message
+    exit_message = '(Press [{}] to stop operation)'.format(exit_key)
     while True:
         try:
-            line = input(message)
+            line = input('\n{0} {1}: '.format(exit_message, message))
             if line == str(exit_key):
                 return False
             num = int(line)
@@ -197,28 +263,21 @@ def get_integer(message, name="integer", exit_key='Q'):
             print("ERROR {0} must be an integer".format(name))
 
 
-# def get_sysargv():
-#     """
-#     Process arguments and options from command line.
-#     """
-#
-#     usage = "usage: %prog arg [options] "
-#     parser = OptionParser(usage=usage)
-#     # parser.add_option("-f", "--file", dest="filename", metavar="FILE",
-#     #                   help="import JSON-file")
-#     parser.add_option("-C", "--clear-table", dest="clear_table", default=False,
-#                       action="store_true",
-#                       help="delete all rows from 'company units' table before "
-#                            "import operation. [default: %default]")
-#
-#     (options, args) = parser.parse_args()
-#
-#     if len(args) != 1:
-#         parser.error("incorrect number of arguments")
-#
-#     return options, args
+def get_menu_choice(message, valid, force_lower=False):
+    """
+    This function accept menu choice from stdin and return it
+    """
 
-def get_argv():
+    while True:
+        line = input('\n{}: '.format(message))
+        if line not in valid:
+            print("ERROR only {0} are valid choices".format(
+                ", ".join(["'{0}'".format(x) for x in sorted(valid)])))
+        else:
+            return line if not force_lower else line.lower()
+
+
+def process_sysargv():
     """
     Process arguments and options from command line.
     """
@@ -254,3 +313,6 @@ def get_argv():
         exit(1)
 
     return {'filename': args[0], 'clear_table': True}
+
+
+main()
