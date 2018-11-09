@@ -3,7 +3,6 @@ It's simple console program what interacts with database
 """
 
 import os
-import sys
 from collections import namedtuple
 import json
 import psycopg2
@@ -58,12 +57,12 @@ def import_JSON(db, filepath, clear_table=True):
         try:
             data_json = json.load(f)
         except json.decoder.JSONDecodeError as err:
-            print('Attempt to import a bad JSON file with name {0}\n\t'
+            print('\nAttempt to import a bad JSON file with name {0}\n\t'
                   '{1}'.format(f.name, err))
             return False
             # raise ValueError(err_msg)
         if not fit_schema(data_json):
-            print('JSON structure doesn\'t fit the scheme of "{0}" table.'
+            print('\nJSON structure doesn\'t fit the scheme of "{0}" table.'
                   '\n\tLoading file: {1}'.format(table_name, f.name))
             return False
             # raise TypeError(err_message)
@@ -72,7 +71,7 @@ def import_JSON(db, filepath, clear_table=True):
               '(%s, %s, %s)'.format(table_name)
     with db.cursor() as cursor:
         try:
-            #check table on exists
+            # check table on exists
             cursor.execute('SELECT * FROM {}'.format(table_name))
         except psycopg2.ProgrammingError as err:
             print(err)
@@ -89,7 +88,7 @@ def import_JSON(db, filepath, clear_table=True):
                 name = None if row['Name'] is None else str(row['Name'])
             except ValueError as err:
                 db.rollback()
-                print('Invalid data from file with name {0}\n\t{1}'.format(
+                print('\nInvalid data from file with name {0}\n\t{1}'.format(
                     f.name, err))
                 return False
 
@@ -97,12 +96,12 @@ def import_JSON(db, filepath, clear_table=True):
                 cursor.execute(command, (id, parentId, name))
             except psycopg2.DatabaseError as err:
                 db.rollback()
-                print('Database Error: unable to import data from file'
+                print('\nDatabase Error: unable to import data from file'
                       ' with name {0}\n\t{1}'.format(f.name, err))
                 return False
 
         db.commit()
-        print('File imported successfully.')
+        print('\nFile imported successfully.')
         return True
 
 
@@ -123,3 +122,77 @@ def fit_schema(data_json):
 
     return False
 
+
+def unit_employees(db, id):
+    """
+    This function search employees who belong to a specific root unit of
+    the company and output searching result to stdout.
+    Function accept employee ID and with help it select data.
+    """
+
+    command = """
+        --search all child units of certain company unit
+        WITH RECURSIVE r AS (
+            --search all company units to which  the employee belongs
+            WITH RECURSIVE r2 AS (
+                SELECT id, parentId, name FROM company_units
+                    WHERE id = %s
+                UNION 
+                SELECT c2.id, c2.parentId, c2.name FROM company_units AS c2
+                JOIN r2
+                    ON c2.id = r2.parentId
+            )
+            --search the root company unit to which  the employee belongs
+            SELECT r2.id, r2.parentId, r2.name FROM r2
+                WHERE r2.parentId IS NULL 
+            UNION
+            SELECT c.id, c.parentId, c.name FROM company_units AS c
+            JOIN r
+                ON c.parentId = r.id
+        )
+        
+        /*search only employees who belong to a specific root unit 
+        of the company*/
+        SELECT r.id, r.parentId, r.name FROM r
+        EXCEPT 
+        SELECT c.id, c.parentId, c.name FROM company_units AS c
+        JOIN company_units AS c2
+            ON c.id = c2.parentId
+            GROUP BY c.id  
+    """
+
+    with db.cursor() as cursor:
+        try:
+            cursor.execute(command, (id,))
+        except psycopg2.DatabaseError as err:
+            print('\nDatabase Error: unable to get data from table'
+                  ' "company_units"\n\t{}'.format(err))
+        else:
+            row_count = 1
+            print()
+            print(' {0:<6} {1:<10} {2:<150}'.format('Num', 'ID', 'Name'))
+            print('{:-<6} {:-<10} {:-<150}'.format('', '', ''))
+            for row in cursor.fetchall():
+                print(' {0:<6} {1:<10} {2:<150}'.format(
+                    row_count, row[0], row[2]))
+                print('{:-<6} {:-<10} {:-<150}'.format('', '', ''))
+                row_count += 1
+
+
+def get_integer(message, name="integer", exit_key='Q'):
+    """
+    This function accept integer or Exit Key from stdin. Return integer
+    or False if was inputted Exit Key.
+    """
+
+    exit_message = '\n(Press [{}] to stop operation) '.format(exit_key)
+    message = exit_message + message
+    while True:
+        try:
+            line = input(message)
+            if line == str(exit_key):
+                return False
+            num = int(line)
+            return num
+        except ValueError:
+            print("ERROR {0} must be an integer".format(name))
