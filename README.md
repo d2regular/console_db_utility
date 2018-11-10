@@ -5,10 +5,9 @@ Console DB utility
 It's simple console program what interacts with database.
 It imports data from a JSON file to table and allows to select data from it.
 
+
 Used database: PostgreSQL 9.6.10
-
 Used python: Python 3.6.6
-
 It is tested with: Linux Mint 19
 
 
