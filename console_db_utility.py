@@ -18,29 +18,22 @@ def main():
     args = process_sysargv()
     filename = args['filename']
     clear_table = args['clear_table']
-    if not os.path.exists(filename):
-        print('File with name {} doesn\'t exist'.format(filename))
-        exit(1)
 
-    # get db connection parameters
+    db = None
     try:
-        params = config('database.ini')
-    except Exception as err:
-        print(err)
-        exit(1)
+        # set db connection
+        params = config('database_1.ini')
+        db = psycopg2.connect(**params)
 
-    # set db connection
-    try:
-        db = connect(**params)
-    except Exception as err:
-        print('Error database connection\n', err)
-        exit(1)
+        # create table
+        if not create_table(db):
+            print('Error creating table\n')
+            exit(1)
 
-    # import from JSON-file to table
-    if not import_JSON(db, filename, clear_table=clear_table):
-        exit(1)
+        # import from JSON-file to table
+        if not import_JSON(db, filename, clear_table=clear_table):
+            exit(1)
 
-    with db.cursor() as cursor:
         # interactive menu of program
         menu = '(S)Select  (Q)uit'
         valid = frozenset('SQ')
@@ -56,6 +49,13 @@ def main():
                 return
             # show result query
             unit_employees(db, employee_id)
+
+    except (Exception, psycopg2.DatabaseError) as err:
+        print(err)
+        exit(1)
+    finally:
+        if db is not None:
+            db.close()
 
 
 def config(filename='database.ini', section='postgresql'):
@@ -77,36 +77,42 @@ def config(filename='database.ini', section='postgresql'):
     return db
 
 
-def connect(database, user, password, host="localhost", port=5432):
+def create_table(db):
     """
-    Create 'company_units' table if it doesn't exist and return
-    object connection DB.
+    Create 'company_units' table if it doesn't exist and return True
+    if operation was successful else False
     """
-
-    with psycopg2.connect(host=host, port=port, database=database, user=user,
-                          password=password) as conn, conn.cursor() as cursor:
-
-        print('Connecting to the database...')
-        try:
-            command = """
+    create_command = """
                         CREATE TABLE IF NOT EXISTS company_units (
                             id INTEGER PRIMARY KEY NOT NULL,
                             parentId INTEGER,
                             name TEXT NOT NULL
                         )
                         """
-            cursor.execute(command)
 
-            command = """
+    fk_command = """
                 ALTER TABLE company_units ADD CONSTRAINT fk_company_units
                     FOREIGN KEY (parentId) REFERENCES company_units(id)
                     """
-            cursor.execute(command)
-        except psycopg2.DatabaseError as err:
-            print(str(err).strip())
 
-        conn.commit()
-        return conn
+    try:
+        cursor = db.cursor()
+        cursor.execute(create_command)
+
+        # foreign key exception
+        try:
+            cursor.execute(fk_command)
+        except psycopg2.ProgrammingError:
+            pass
+
+        db.commit()
+    except psycopg2.DatabaseError as err:
+        print(str(err).strip())
+        return False
+    else:
+        return True
+    finally:
+        cursor.close()
 
 
 def import_JSON(db, filename, clear_table=False):
@@ -121,30 +127,40 @@ def import_JSON(db, filename, clear_table=False):
     data_json = None
     filename = os.path.abspath(filename)
     table_name = 'company_units'
-    with open(filename) as f:
-        try:
-            data_json = json.load(f)
-        except json.decoder.JSONDecodeError as err:
-            print('\nAttempt to import a bad JSON file with name {0}\n\t'
-                  '{1}'.format(f.name, err))
-            return False
+    f = None
+    try:
+        f = open(filename)
+        data_json = json.load(f)
         if not fit_schema(data_json):
-            print('\nJSON structure doesn\'t fit the scheme of "{0}" table.'
-                  '\n\tLoading file: {1}'.format(table_name, f.name))
+            print(
+                '\nJSON structure doesn\'t fit the scheme of "{0}" table.'
+                '\n\tLoading file: {1}'.format(table_name, f.name))
             return False
+    except json.decoder.JSONDecodeError as err:
+        print('\nAttempt to import a bad JSON file with name {0}\n\t'
+              '{1}'.format(f.name, err))
+        return False
+    except IOError as err:
+        print(err)
+        return False
+    finally:
+        if f is not None:
+            f.close()
 
     command = 'INSERT INTO {} (id, ParentId, Name) VALUES ' \
               '(%s, %s, %s)'.format(table_name)
-    with db.cursor() as cursor:
+    cursor = None
+    try:
+        cursor = db.cursor()
         try:
             # check table on exists
             cursor.execute('SELECT * FROM {}'.format(table_name))
+
+            if clear_table:
+                cursor.execute('DELETE FROM {} WHERE 1 = 1'.format(table_name))
         except psycopg2.ProgrammingError as err:
             print(err)
             return False
-
-        if clear_table:
-            cursor.execute('DELETE FROM {} WHERE 1 = 1'.format(table_name))
 
         for row in data_json:
             try:
@@ -152,23 +168,33 @@ def import_JSON(db, filename, clear_table=False):
                 parentId = None if row['ParentId'] is None \
                     else int(row['ParentId'])
                 name = None if row['Name'] is None else str(row['Name'])
+
+                cursor.execute(command, (id, parentId, name))
             except ValueError as err:
                 db.rollback()
                 print('\nInvalid data from file with name {0}\n\t{1}'.format(
                     f.name, err))
                 return False
-
-            try:
-                cursor.execute(command, (id, parentId, name))
             except psycopg2.DatabaseError as err:
                 db.rollback()
                 print('\nDatabase Error: unable to import data from file'
                       ' with name {0}\n\t{1}'.format(f.name, err))
                 return False
 
+    except psycopg2.DatabaseError as err:
+        print(err)
+        return False
+    finally:
+        if cursor is not None:
+            cursor.close()
+
+    try:
         db.commit()
         print('\nFile imported successfully.')
         return True
+    except psycopg2.DatabaseError as err:
+        print(err)
+        return False
 
 
 def fit_schema(data_json):
@@ -227,22 +253,27 @@ def unit_employees(db, id):
             GROUP BY c.id  
     """
 
-    with db.cursor() as cursor:
-        try:
-            cursor.execute(command, (id,))
-        except psycopg2.DatabaseError as err:
-            print('\nDatabase Error: unable to get data from table'
-                  ' "company_units"\n\t{}'.format(err))
-        else:
-            row_count = 1
-            print()
-            print(' {0:<6} {1:<10} {2:<150}'.format('Num', 'ID', 'Name'))
+    cursor = None
+    try:
+        cursor = db.cursor()
+        cursor.execute(command, (id,))
+        select_data = cursor.fetchall()
+    except psycopg2.DatabaseError as err:
+        print('\nDatabase Error: unable to get data from table'
+              ' "company_units"\n\t{}'.format(err))
+    else:
+        row_count = 1
+        print()
+        print(' {0:<6} {1:<10} {2:<150}'.format('Num', 'ID', 'Name'))
+        print('{:-<6} {:-<10} {:-<150}'.format('', '', ''))
+        for row in select_data:
+            print(' {0:<6} {1:<10} {2:<150}'.format(
+                row_count, row[0], row[2]))
             print('{:-<6} {:-<10} {:-<150}'.format('', '', ''))
-            for row in cursor.fetchall():
-                print(' {0:<6} {1:<10} {2:<150}'.format(
-                    row_count, row[0], row[2]))
-                print('{:-<6} {:-<10} {:-<150}'.format('', '', ''))
-                row_count += 1
+            row_count += 1
+    finally:
+        if cursor is not None:
+            cursor.close()
 
 
 def get_integer(message, name="integer", exit_key='Q'):
